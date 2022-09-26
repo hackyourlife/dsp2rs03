@@ -23,22 +23,22 @@
 
 const char RS03_magic[] = {'R', 'S', 0x00, 0x03};
 
-int get16bitBE(unsigned char* p)
+static inline int get16bitBE(unsigned char* p)
 {
 	return (p[0] << 8) | p[1];
 }
 
-int get32bitBE(unsigned char* p)
+static inline int get32bitBE(unsigned char* p)
 {
 	return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
 }
 
-void put16bitBE(unsigned char* p, int x) {
+static inline void put16bitBE(unsigned char* p, int x) {
 	p[0] = (x >> 8) & 0xFF;
 	p[1] = x & 0xFF;
 }
 
-void put32bitBE(unsigned char* p, int x) {
+static inline void put32bitBE(unsigned char* p, int x) {
 	p[0] = (x >> 24) & 0xFF;
 	p[1] = (x >> 16) & 0xFF;
 	p[2] = (x >> 8) & 0xFF;
@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	unsigned char readbuf[0x1000]; // 4k (127 channels)
+	unsigned char readbuf[sizeof(DSPHeader)];
 	unsigned long ch;
 	unsigned long channel_count = argc - 2;
 	FILE** channels = (FILE**) malloc(channel_count * sizeof(FILE*));
@@ -183,8 +183,8 @@ int main(int argc, char** argv) {
 	for(ch = 0; ch < channel_count; ch++) {
 		channels[ch] = fopen(argv[ch + 1], "rb");
 		headers[ch] = (DSPHeader*) malloc(sizeof(DSPHeader));
-		fread(&readbuf, 0x100, 1, channels[ch]);
-		load_devkit(headers[ch], (unsigned char*) &readbuf);
+		fread(readbuf, sizeof(DSPHeader), 1, channels[ch]);
+		load_devkit(headers[ch], readbuf);
 	}
 
 	for(ch = 0; ch < (channel_count - 1); ch++) {
@@ -194,9 +194,11 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	u32 size = store_rs03(headers, channel_count, &num_adpcm_bytes, (unsigned char*) &readbuf);
+	unsigned char* wrbuf = (unsigned char*) malloc(0x20 + channel_count * 0x20);
+	u32 size = store_rs03(headers, channel_count, &num_adpcm_bytes, wrbuf);
 	printf("header: 0x%04X bytes\n", size);
-	fwrite(&readbuf, size, 1, rs03);
+	fwrite(wrbuf, size, 1, rs03);
+	free(wrbuf);
 
 	interleave_rs03(headers[0], num_adpcm_bytes, channels, channel_count, rs03);
 	for(ch = 0; ch < channel_count; ch++) {
