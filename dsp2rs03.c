@@ -82,6 +82,35 @@ void load_devkit(DSPHeader* dsp, unsigned char* buffer) {
 	dsp->lyn2 = get16bitBE(buffer + 0x48);
 }
 
+int validate_header(DSPHeader* dsp)
+{
+	if(dsp->format != 0) {
+		printf("invalid format: %u\n", dsp->format);
+		return 0;
+	}
+
+	if(dsp->loop_flag && (dsp->sa > dsp->num_adpcm_nibbles || dsp->ea > dsp->num_adpcm_nibbles)) {
+		printf("invalid sa (%u) or ea (%u)\n", dsp->sa, dsp->ea);
+		return 0;
+	}
+
+	if(dsp->sample_rate < 4000 || dsp->sample_rate > 384000) {
+		printf("invalid sample rate: %u\n", dsp->sample_rate);
+		return 0;
+	}
+
+	/* validate sample vs nibble count */
+	u32 nibbles = dsp->num_samples * 8 / 7;
+	if(dsp->num_samples % 14)
+		nibbles += 2;
+	if(dsp->num_adpcm_nibbles != nibbles) {
+		printf("invalid adpcm nibbles: %u (samples: %u => %u)\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
+		return 0;
+	}
+
+	return 1;
+}
+
 int check_headers(DSPHeader* dsp_L, DSPHeader* dsp_R) {
 	if(dsp_L->num_samples != dsp_R->num_samples)
 		return 0;
@@ -100,26 +129,26 @@ int check_headers(DSPHeader* dsp_L, DSPHeader* dsp_R) {
 	return 1;
 }
 
-u32 store_rs03(DSPHeader** dsp, unsigned long channel_count, u32* num_adpcm_bytes, unsigned char* buffer) {
+u32 store_rs03(DSPHeader* dsp, unsigned long channel_count, u32* num_adpcm_bytes, unsigned char* buffer) {
 	int i;
 	unsigned long ch;
 
-	*num_adpcm_bytes = (dsp[0]->num_adpcm_nibbles + 15) / 16 * 8;
+	*num_adpcm_bytes = (dsp->num_adpcm_nibbles + 15) / 16 * 8;
 
 	memset(buffer, 0, 0x20 + channel_count * 0x20);
 	memcpy(buffer, RS03_magic, 0x04);
 	put32bitBE(buffer + 0x04, channel_count);
-	put32bitBE(buffer + 0x08, dsp[0]->num_samples);
-	put32bitBE(buffer + 0x0C, dsp[0]->sample_rate);
+	put32bitBE(buffer + 0x08, dsp->num_samples);
+	put32bitBE(buffer + 0x0C, dsp->sample_rate);
 	put32bitBE(buffer + 0x10, *num_adpcm_bytes);
-	put16bitBE(buffer + 0x14, dsp[0]->loop_flag);
-	put16bitBE(buffer + 0x16, dsp[0]->format);
-	put32bitBE(buffer + 0x18, dsp[0]->sa / 16 * 8);
-	put32bitBE(buffer + 0x1C, dsp[0]->ea / 2);
+	put16bitBE(buffer + 0x14, dsp->loop_flag);
+	put16bitBE(buffer + 0x16, dsp->format);
+	put32bitBE(buffer + 0x18, dsp->sa / 2);
+	put32bitBE(buffer + 0x1C, dsp->ea / 2);
 
 	for(ch = 0; ch < channel_count; ch++)
 		for(i = 0; i < 16; i++)
-			put16bitBE(buffer + 0x20 + (ch * 0x20) + i * 2, dsp[ch]->coef[i]);
+			put16bitBE(buffer + 0x20 + (ch * 0x20) + i * 2, dsp[ch].coef[i]);
 
 	return 0x20 + channel_count * 0x20;
 }
@@ -175,34 +204,66 @@ int main(int argc, char** argv) {
 	unsigned char readbuf[sizeof(DSPHeader)];
 	unsigned long ch;
 	unsigned long channel_count = argc - 2;
+
 	FILE** channels = (FILE**) malloc(channel_count * sizeof(FILE*));
-	DSPHeader** headers = (DSPHeader**) malloc(channel_count * sizeof(DSPHeader*));
-	FILE* rs03 = fopen(argv[argc - 1], "wb");
-	u32 num_adpcm_bytes;
+	if(!channels) {
+		puts("Error: not enough memory (input files)");
+		return 1;
+	}
+
+	DSPHeader* headers = (DSPHeader*) malloc(channel_count * sizeof(DSPHeader));
+	if(!headers) {
+		puts("Error: not enough memory (DSP headers)");
+		free(channels);
+		return 1;
+	}
+
+	memset(headers, 0, channel_count * sizeof(DSPHeader));
 
 	for(ch = 0; ch < channel_count; ch++) {
 		channels[ch] = fopen(argv[ch + 1], "rb");
-		headers[ch] = (DSPHeader*) malloc(sizeof(DSPHeader));
+		if(!channels[ch]) {
+			perror("fopen(input)");
+			goto error;
+		}
+
 		fread(readbuf, sizeof(DSPHeader), 1, channels[ch]);
-		load_devkit(headers[ch], readbuf);
+		load_devkit(&headers[ch], readbuf);
+	}
+
+	if(!validate_header(headers)) {
+		puts("invalid dsp file");
+		goto error;
 	}
 
 	for(ch = 0; ch < (channel_count - 1); ch++) {
-		if(!check_headers(headers[ch], headers[ch + 1])) {
+		if(!check_headers(&headers[ch], &headers[ch + 1])) {
 			puts("the files are invalid");
-			return 1;
+			goto error;
 		}
 	}
 
 	unsigned char* wrbuf = (unsigned char*) malloc(0x20 + channel_count * 0x20);
+	if(!wrbuf) {
+		puts("Error: not enough memory (write buffer)");
+		goto error;
+	}
+
+	FILE* rs03 = fopen(argv[argc - 1], "wb");
+
+	if(!rs03) {
+		perror("fopen(rs03)");
+		goto error_rs03;
+	}
+
+	u32 num_adpcm_bytes;
 	u32 size = store_rs03(headers, channel_count, &num_adpcm_bytes, wrbuf);
 	printf("header: 0x%04X bytes\n", size);
 	fwrite(wrbuf, size, 1, rs03);
 	free(wrbuf);
 
-	interleave_rs03(headers[0], num_adpcm_bytes, channels, channel_count, rs03);
+	interleave_rs03(headers, num_adpcm_bytes, channels, channel_count, rs03);
 	for(ch = 0; ch < channel_count; ch++) {
-		free(headers[ch]);
 		fclose(channels[ch]);
 	}
 
@@ -210,4 +271,15 @@ int main(int argc, char** argv) {
 	free(headers);
 	free(channels);
 	return 0;
+
+error_rs03:
+	free(wrbuf);
+error:
+	for(ch = 0; ch < channel_count; ch++) {
+		if(channels[ch])
+			fclose(channels[ch]);
+	}
+	free(headers);
+	free(channels);
+	return 1;
 }
