@@ -61,6 +61,20 @@ typedef struct {
 	u16 lps,lyn1,lyn2;
 } DSPHeader;
 
+u32 get_adpcm_nibbles(u32 samples)
+{
+	u32 frames     = samples / 14;
+	u32 last_frame = samples % 14;
+
+	u32 nibbles = frames * 16;
+
+	if(last_frame) {
+		return nibbles + last_frame + 2;
+	} else {
+		return nibbles;
+	}
+}
+
 void load_devkit(DSPHeader* dsp, unsigned char* buffer) {
 	int i;
 	dsp->num_samples = get32bitBE(buffer);
@@ -100,12 +114,22 @@ int validate_header(DSPHeader* dsp)
 	}
 
 	/* validate sample vs nibble count */
-	u32 nibbles = dsp->num_samples * 8 / 7;
-	if(dsp->num_samples % 14)
-		nibbles += 2;
+	u32 nibbles = get_adpcm_nibbles(dsp->num_samples);
 	if(dsp->num_adpcm_nibbles != nibbles) {
-		printf("invalid adpcm nibbles: %u (samples: %u => %u)\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
-		return 0;
+		/* workaround for over-stonehengeL.dsp */
+		if(!(dsp->num_samples % 14)) {
+			/* add another frame header for no reason */
+			nibbles += 2;
+			if(dsp->num_adpcm_nibbles != nibbles) {
+				goto adpcm_error;
+			} else {
+				printf("WARNING: invalid adpcm nibbles: %u (samples: %u => %u), empty frame detected\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
+			}
+		} else {
+adpcm_error:
+			printf("invalid adpcm nibbles: %u (samples: %u => %u)\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
+			return 0;
+		}
 	}
 
 	return 1;
