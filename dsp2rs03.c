@@ -103,24 +103,13 @@ int validate_header(DSPHeader* dsp)
 		return 0;
 	}
 
-	if(dsp->loop_flag && (dsp->sa > dsp->num_adpcm_nibbles || dsp->ea > dsp->num_adpcm_nibbles)) {
-		printf("invalid sa (%u) or ea (%u)\n", dsp->sa, dsp->ea);
-		return 0;
-	}
-
-	if(dsp->sample_rate < 4000 || dsp->sample_rate > 384000) {
-		printf("invalid sample rate: %u\n", dsp->sample_rate);
-		return 0;
-	}
-
 	/* validate sample vs nibble count */
 	u32 nibbles = get_adpcm_nibbles(dsp->num_samples);
 	if(dsp->num_adpcm_nibbles != nibbles) {
 		/* workaround for over-stonehengeL.dsp */
 		if(!(dsp->num_samples % 14)) {
 			/* add another frame header for no reason */
-			nibbles += 2;
-			if(dsp->num_adpcm_nibbles != nibbles) {
+			if(dsp->num_adpcm_nibbles != nibbles + 2) {
 				goto adpcm_error;
 			} else {
 				printf("WARNING: invalid adpcm nibbles: %u (samples: %u => %u), empty frame detected\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
@@ -130,6 +119,23 @@ adpcm_error:
 			printf("invalid adpcm nibbles: %u (samples: %u => %u)\n", dsp->num_adpcm_nibbles, dsp->num_samples, nibbles);
 			return 0;
 		}
+	}
+
+	if(dsp->loop_flag) {
+		if(dsp->sa > dsp->num_adpcm_nibbles) {
+			printf("invalid sa %u, track only has %u nibbles\n", dsp->sa, dsp->num_adpcm_nibbles);
+			return 0;
+		}
+
+		if(dsp->ea > dsp->num_adpcm_nibbles) {
+			printf("invalid ea %u, track only has %u nibbles\n", dsp->ea, dsp->num_adpcm_nibbles);
+			return 0;
+		}
+	}
+
+	if(dsp->sample_rate < 4000 || dsp->sample_rate > 384000) {
+		printf("invalid sample rate: %u\n", dsp->sample_rate);
+		return 0;
 	}
 
 	return 1;
